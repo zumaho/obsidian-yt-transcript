@@ -71,33 +71,38 @@ if (playerMatch) {
 
 				console.log(`\n📥 Trying ${fmt}:`);
 
-				// Without cookies
+				// Minimal headers
 				const res1 = await fetch(url, {
 					headers: {
 						"User-Agent":
-							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 						"Accept-Encoding": "identity",
 					},
 				});
 				const body1 = await res1.text();
 				console.log(
-					`  WITHOUT cookies: status=${res1.status}, content-length=${res1.headers.get("content-length")}, body=${body1.length} bytes`,
+					`  Minimal headers:     status=${res1.status}, content-length=${res1.headers.get("content-length")}, body=${body1.length} bytes`,
 				);
 				if (body1.length > 0)
 					console.log(`  Preview: ${body1.substring(0, 100)}`);
 
-				// With cookies
+				// With browser-like headers (sec-fetch-*)
 				const res2 = await fetch(url, {
 					headers: {
 						"User-Agent":
-							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 						"Accept-Encoding": "identity",
+						Referer: "https://www.youtube.com/",
+						Origin: "https://www.youtube.com",
+						"Sec-Fetch-Dest": "empty",
+						"Sec-Fetch-Mode": "cors",
+						"Sec-Fetch-Site": "same-origin",
 						Cookie: cookies,
 					},
 				});
 				const body2 = await res2.text();
 				console.log(
-					`  WITH cookies:    status=${res2.status}, content-length=${res2.headers.get("content-length")}, body=${body2.length} bytes`,
+					`  Browser headers:     status=${res2.status}, content-length=${res2.headers.get("content-length")}, body=${body2.length} bytes`,
 				);
 				if (body2.length > 0)
 					console.log(`  Preview: ${body2.substring(0, 100)}`);
@@ -185,6 +190,7 @@ if (pageParams) {
 				clientVersion: "2.20250701.01.00",
 				hl: "en",
 				gl: "US",
+				visitorData: visitorData,
 				mainAppWebInfo: {
 					graftUrl: `https://www.youtube.com/watch?v=${videoId}`,
 					webDisplayMode: "WEB_DISPLAY_MODE_BROWSER",
@@ -197,7 +203,6 @@ if (pageParams) {
 				consistencyTokenJars: [],
 			},
 		},
-		externalVideoId: videoId,
 		params: pageParams,
 	});
 

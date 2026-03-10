@@ -281,6 +281,7 @@ export class YoutubeTranscript {
 							hl: langCode,
 							gl: config?.country || "US",
 							timeZone: "Asia/Tokyo",
+							visitorData: visitorData,
 							mainAppWebInfo: {
 								graftUrl: `https://www.youtube.com/watch?v=${videoId}`,
 								webDisplayMode: "WEB_DISPLAY_MODE_BROWSER",
@@ -296,7 +297,6 @@ export class YoutubeTranscript {
 							consistencyTokenJars: [],
 						},
 					},
-					externalVideoId: videoId,
 					params: params,
 				};
 
@@ -786,15 +786,24 @@ export class YoutubeTranscript {
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
-		// Use cookies from watch page session (critical for timedtext authentication)
+		// Use cookies from watch page session
 		const cookieHeader =
 			this.lastWatchPageCookies ||
 			"CONSENT=YES+cb.20210328-17-p0.en+FX+{}";
+		// Include browser-like headers that YouTube may check
 		const headers: Record<string, string> = {
 			"User-Agent":
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 			"Accept-Language": "en-US,en;q=0.9",
 			"Accept-Encoding": "identity",
+			Referer: "https://www.youtube.com/",
+			Origin: "https://www.youtube.com",
+			"Sec-Fetch-Dest": "empty",
+			"Sec-Fetch-Mode": "cors",
+			"Sec-Fetch-Site": "same-origin",
+			"Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+			"Sec-Ch-Ua-Mobile": "?0",
+			"Sec-Ch-Ua-Platform": '"Windows"',
 			Cookie: cookieHeader,
 		};
 
