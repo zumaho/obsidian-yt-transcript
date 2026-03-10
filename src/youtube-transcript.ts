@@ -242,13 +242,12 @@ export class YoutubeTranscript {
 			`🔄 Trying ${paramsList.length} param combinations with get_transcript API...`,
 		);
 
-		const apiUrl =
-			"https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false";
+		const apiUrl = `https://www.youtube.com/youtubei/v1/get_transcript?key=${YoutubeTranscript.INNERTUBE_API_KEY}&prettyPrint=false`;
 		const clientVersion = "2.20250701.01.00";
 		const headers: Record<string, string> = {
 			"Content-Type": "application/json",
 			"User-Agent":
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
 			Accept: "*/*",
 			"Accept-Language": "en-US,en;q=0.9",
 			"X-Youtube-Client-Name": "1",
@@ -277,6 +276,20 @@ export class YoutubeTranscript {
 							clientVersion: clientVersion,
 							hl: langCode,
 							gl: config?.country || "US",
+							timeZone: "Asia/Tokyo",
+							mainAppWebInfo: {
+								graftUrl: `https://www.youtube.com/watch?v=${videoId}`,
+								webDisplayMode: "WEB_DISPLAY_MODE_BROWSER",
+								isWebNativeShareAvailable: true,
+							},
+						},
+						user: {
+							lockedSafetyMode: false,
+						},
+						request: {
+							useSsl: true,
+							internalExperimentFlags: [],
+							consistencyTokenJars: [],
 						},
 					},
 					externalVideoId: videoId,
@@ -291,7 +304,7 @@ export class YoutubeTranscript {
 				});
 
 				console.log(
-					`📄 get_transcript response (${source}): ${response.text.length} bytes`,
+					`📄 get_transcript response (${source}): ${response.text.length} bytes, preview: ${response.text.substring(0, 150)}`,
 				);
 
 				const lines = parseTranscript(response.text);
@@ -305,6 +318,8 @@ export class YoutubeTranscript {
 					};
 				}
 			} catch (e: any) {
+				// Log the response body for 400 errors to help debug
+				const statusMatch = e.message?.match(/status (\d+)/);
 				console.log(
 					`❌ Attempt ${i + 1} failed (${source}): ${e.message}`,
 				);
