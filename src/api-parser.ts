@@ -231,6 +231,46 @@ function decodeHtmlEntities(text: string): string {
 }
 
 /**
+ * Parse transcript from YouTube's JSON3 format (fmt=json3)
+ * This is the format used by youtube-transcript-api and is the most reliable.
+ */
+export function parseTranscriptJson3(jsonContent: string): TranscriptLine[] {
+	const lines: TranscriptLine[] = [];
+
+	try {
+		const data = JSON.parse(jsonContent);
+		const events = data?.events;
+		if (!Array.isArray(events)) {
+			return [];
+		}
+
+		for (const event of events) {
+			// Skip events without segments (e.g., formatting events)
+			if (!event.segs) continue;
+
+			const text = event.segs
+				.map((seg: any) => seg.utf8 || "")
+				.join("")
+				.replace(/\n/g, " ")
+				.trim();
+
+			if (text) {
+				lines.push({
+					text,
+					offset: event.tStartMs || 0,
+					duration: event.dDurationMs || 0,
+				});
+			}
+		}
+	} catch {
+		// Not valid JSON3 format
+		return [];
+	}
+
+	return lines;
+}
+
+/**
  * Parse transcript XML from YouTube caption track URL
  * Supports both <text> and <p> tag formats
  */

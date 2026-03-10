@@ -1,6 +1,7 @@
 import { requestUrl } from "obsidian";
 import {
 	parseTranscriptXml,
+	parseTranscriptJson3,
 	getCaptionTracksFromPage,
 	extractVideoTitle,
 } from "./api-parser";
@@ -120,6 +121,15 @@ export class YoutubeTranscript {
 			);
 
 			const lines = await this.fetchTranscriptFromUrl(transcriptUrl);
+
+			if (lines.length === 0) {
+				throw new YoutubeTranscriptError(
+					new Error(
+						"Transcript response contained no parseable caption lines",
+					),
+				);
+			}
+
 			console.log(
 				`✅ Successfully fetched ${lines.length} transcript lines`,
 			);
@@ -464,44 +474,85 @@ export class YoutubeTranscript {
 	}
 
 	/**
-	 * Cleans a caption track URL to ensure it returns XML format.
-	 * Strips fmt=srv3 (JSON format) and ensures proper format for XML parsing.
+	 * Prepares a caption track URL: ensures absolute URL and sets the format parameter.
 	 */
-	private static cleanTranscriptUrl(transcriptUrl: string): string {
+	private static prepareCaptionUrl(
+		transcriptUrl: string,
+		fmt: string,
+	): string {
 		let url = transcriptUrl;
 		// Ensure absolute URL (some responses return relative paths)
 		if (url.startsWith("/")) {
 			url = "https://www.youtube.com" + url;
 		}
-		// Remove fmt=srv3 or any fmt parameter (we want default XML format)
+		// Remove any existing fmt parameter
 		url = url.replace(/([?&])fmt=[^&]*(&|$)/, (_, prefix, suffix) =>
 			suffix ? prefix : "",
 		);
-		// Remove trailing & or ? if we stripped the last param
+		// Remove trailing & or ?
 		url = url.replace(/[?&]$/, "");
+		// Add the requested format
+		url += (url.includes("?") ? "&" : "?") + `fmt=${fmt}`;
 		return url;
 	}
 
 	/**
-	 * Fetches transcript XML from the caption track URL
+	 * Fetches transcript from the caption track URL.
+	 * Tries JSON3 format first (most reliable), then falls back to XML.
 	 */
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
-		const cleanUrl = this.cleanTranscriptUrl(transcriptUrl);
+		const headers = {
+			"User-Agent":
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+			"Accept-Language": "en-US,en;q=0.9",
+		};
+
+		// Try JSON3 format first (used by youtube-transcript-api, most reliable)
+		const json3Url = this.prepareCaptionUrl(transcriptUrl, "json3");
+		console.log(
+			`📥 Fetching transcript (json3): ${json3Url.substring(0, 80)}...`,
+		);
+
+		try {
+			const response = await requestUrl({
+				url: json3Url,
+				method: "GET",
+				headers,
+			});
+
+			console.log(
+				`📄 JSON3 response length: ${response.text.length} bytes`,
+			);
+
+			if (response.text.length > 0) {
+				const lines = parseTranscriptJson3(response.text);
+				if (lines.length > 0) {
+					console.log(
+						`✅ Parsed ${lines.length} lines from JSON3 format`,
+					);
+					return lines;
+				}
+			}
+		} catch (e: any) {
+			console.log(`⚠️ JSON3 fetch failed: ${e.message}`);
+		}
+
+		// Fall back to XML format
+		const xmlUrl = this.prepareCaptionUrl(transcriptUrl, "srv1");
+		console.log(
+			`📥 Fetching transcript (XML): ${xmlUrl.substring(0, 80)}...`,
+		);
 
 		const response = await requestUrl({
-			url: cleanUrl,
+			url: xmlUrl,
 			method: "GET",
-			headers: {
-				"User-Agent":
-					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-				"Accept-Language": "en-US,en;q=0.9",
-			},
+			headers,
 		});
 
 		console.log(
-			`📄 Transcript response length: ${response.text.length} bytes`,
+			`📄 XML response length: ${response.text.length} bytes`,
 		);
 
 		if (response.text.length === 0) {

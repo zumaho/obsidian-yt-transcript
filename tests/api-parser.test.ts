@@ -4,6 +4,7 @@ import {
 	getCaptionTracksFromPlayer,
 	getCaptionTracksFromPage,
 	parseTranscriptXml,
+	parseTranscriptJson3,
 } from "../src/api-parser";
 
 describe("extractVideoTitle", () => {
@@ -306,5 +307,78 @@ describe("getCaptionTracksFromPage", () => {
 		const html = "<html><body></body></html>";
 		const tracks = getCaptionTracksFromPage(html);
 		expect(tracks).toHaveLength(0);
+	});
+});
+
+describe("parseTranscriptJson3", () => {
+	it("should parse JSON3 format transcript", () => {
+		const json = JSON.stringify({
+			events: [
+				{
+					tStartMs: 0,
+					dDurationMs: 5000,
+					segs: [{ utf8: "Hello " }, { utf8: "world" }],
+				},
+				{
+					tStartMs: 5000,
+					dDurationMs: 3000,
+					segs: [{ utf8: "Second line" }],
+				},
+			],
+		});
+
+		const lines = parseTranscriptJson3(json);
+		expect(lines).toHaveLength(2);
+		expect(lines[0].text).toBe("Hello world");
+		expect(lines[0].offset).toBe(0);
+		expect(lines[0].duration).toBe(5000);
+		expect(lines[1].text).toBe("Second line");
+		expect(lines[1].offset).toBe(5000);
+	});
+
+	it("should skip events without segments", () => {
+		const json = JSON.stringify({
+			events: [
+				{ tStartMs: 0, dDurationMs: 1000 }, // no segs
+				{
+					tStartMs: 1000,
+					dDurationMs: 2000,
+					segs: [{ utf8: "Text" }],
+				},
+			],
+		});
+
+		const lines = parseTranscriptJson3(json);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe("Text");
+	});
+
+	it("should skip empty text segments", () => {
+		const json = JSON.stringify({
+			events: [
+				{
+					tStartMs: 0,
+					dDurationMs: 1000,
+					segs: [{ utf8: "\n" }],
+				},
+				{
+					tStartMs: 1000,
+					dDurationMs: 2000,
+					segs: [{ utf8: "Real text" }],
+				},
+			],
+		});
+
+		const lines = parseTranscriptJson3(json);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe("Real text");
+	});
+
+	it("should return empty array for invalid JSON", () => {
+		expect(parseTranscriptJson3("not json")).toHaveLength(0);
+	});
+
+	it("should return empty array for missing events", () => {
+		expect(parseTranscriptJson3("{}")).toHaveLength(0);
 	});
 });
