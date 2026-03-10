@@ -318,10 +318,28 @@ export class YoutubeTranscript {
 					};
 				}
 			} catch (e: any) {
-				// Log the response body for 400 errors to help debug
-				const statusMatch = e.message?.match(/status (\d+)/);
+				// Try to extract response body from error for debugging
+				let errorDetail = e.message || String(e);
+				try {
+					// Obsidian's requestUrl may attach response data to the error
+					if (e.response) {
+						const errText =
+							typeof e.response === "string"
+								? e.response
+								: JSON.stringify(e.response).substring(0, 300);
+						errorDetail += ` | response: ${errText}`;
+					}
+					// Some error objects have a body or text property
+					if (e.body) errorDetail += ` | body: ${String(e.body).substring(0, 300)}`;
+					if (e.text) errorDetail += ` | text: ${String(e.text).substring(0, 300)}`;
+					// Log all enumerable keys for debugging
+					const keys = Object.keys(e);
+					if (keys.length > 0) {
+						errorDetail += ` | keys: [${keys.join(",")}]`;
+					}
+				} catch {}
 				console.log(
-					`❌ Attempt ${i + 1} failed (${source}): ${e.message}`,
+					`❌ Attempt ${i + 1} failed (${source}): ${errorDetail}`,
 				);
 			}
 		}
@@ -716,16 +734,38 @@ export class YoutubeTranscript {
 	}
 
 	/**
+	 * Extracts text from a requestUrl response, handling potential encoding issues.
+	 * Falls back to reading arrayBuffer if text is empty.
+	 */
+	private static extractResponseText(response: any): string {
+		// Try text first
+		if (response.text && response.text.length > 0) {
+			return response.text;
+		}
+		// Fall back to arrayBuffer (handles gzip/encoding edge cases)
+		if (response.arrayBuffer && response.arrayBuffer.byteLength > 0) {
+			const decoder = new TextDecoder("utf-8");
+			const text = decoder.decode(response.arrayBuffer);
+			console.log(
+				`🔧 text was empty but arrayBuffer had ${response.arrayBuffer.byteLength} bytes → decoded ${text.length} chars`,
+			);
+			return text;
+		}
+		return "";
+	}
+
+	/**
 	 * Fetches transcript from the caption track URL.
 	 * Tries the URL as-is first, then with explicit format parameters.
 	 */
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
-		const headers = {
+		const headers: Record<string, string> = {
 			"User-Agent":
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 			"Accept-Language": "en-US,en;q=0.9",
+			"Accept-Encoding": "identity",
 			Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
 		};
 
@@ -757,13 +797,18 @@ export class YoutubeTranscript {
 					headers,
 				});
 
-				const text = response.text;
+				// Log response metadata for debugging
 				console.log(
-					`📄 Response (${label}): ${text.length} bytes, starts with: ${JSON.stringify(text.substring(0, 100))}`,
+					`📊 Response status (${label}): ${response.status}, headers: ${JSON.stringify(response.headers).substring(0, 200)}`,
+				);
+
+				const text = this.extractResponseText(response);
+				console.log(
+					`📄 Response (${label}): text=${text.length} bytes, arrayBuffer=${response.arrayBuffer?.byteLength || 0} bytes, starts with: ${JSON.stringify(text.substring(0, 100))}`,
 				);
 
 				if (text.length === 0) {
-					lastError = `${label}: empty response`;
+					lastError = `${label}: empty response (status ${response.status})`;
 					continue;
 				}
 
@@ -779,7 +824,9 @@ export class YoutubeTranscript {
 				lastResponsePreview = text.substring(0, 200);
 			} catch (e: any) {
 				lastError = `${label}: ${e.message}`;
-				console.log(`⚠️ Fetch failed (${label}): ${e.message}`);
+				console.log(
+					`⚠️ Fetch failed (${label}): ${e.message}, error keys: ${Object.keys(e).join(",")}`,
+				);
 			}
 		}
 
