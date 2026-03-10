@@ -54,8 +54,9 @@ export class YoutubeTranscript {
 	// Player params to bypass ANDROID client integrity checks (NewPipe workaround)
 	private static readonly ANDROID_PLAYER_PARAMS = "CgIQBg";
 
-	// Store watch page HTML for reuse between methods
+	// Store watch page HTML and cookies for reuse between methods
 	private static lastWatchPageHtml: string = "";
+	private static lastWatchPageCookies: string = "";
 
 	public static async getTranscript(
 		url: string,
@@ -244,6 +245,9 @@ export class YoutubeTranscript {
 
 		const apiUrl = `https://www.youtube.com/youtubei/v1/get_transcript?key=${YoutubeTranscript.INNERTUBE_API_KEY}&prettyPrint=false`;
 		const clientVersion = "2.20250701.01.00";
+		const sessionCookies =
+			this.lastWatchPageCookies ||
+			"CONSENT=YES+cb.20210328-17-p0.en+FX+{}";
 		const headers: Record<string, string> = {
 			"Content-Type": "application/json",
 			"User-Agent":
@@ -257,7 +261,7 @@ export class YoutubeTranscript {
 			"X-Origin": "https://www.youtube.com",
 			Origin: "https://www.youtube.com",
 			Referer: `https://www.youtube.com/watch?v=${videoId}`,
-			Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
+			Cookie: sessionCookies,
 		};
 
 		for (let i = 0; i < paramsList.length; i++) {
@@ -301,11 +305,19 @@ export class YoutubeTranscript {
 					method: "POST",
 					headers,
 					body: JSON.stringify(requestBody),
+					throw: false,
 				});
 
 				console.log(
-					`📄 get_transcript response (${source}): ${response.text.length} bytes, preview: ${response.text.substring(0, 150)}`,
+					`📄 get_transcript response (${source}): status=${response.status}, ${response.text.length} bytes, preview: ${response.text.substring(0, 200)}`,
 				);
+
+				if (response.status >= 400) {
+					console.log(
+						`❌ Attempt ${i + 1} (${source}): HTTP ${response.status}, body: ${response.text.substring(0, 300)}`,
+					);
+					continue;
+				}
 
 				const lines = parseTranscript(response.text);
 				if (lines && lines.length > 0) {
@@ -427,6 +439,19 @@ export class YoutubeTranscript {
 		if (!html || html.length === 0) {
 			throw new Error("Empty response from YouTube watch page");
 		}
+
+		// Extract and cache cookies from response for subsequent requests
+		const setCookies = response.headers["set-cookie"] || "";
+		const cookieParts = setCookies
+			.split(/,(?=[^ ])/g)
+			.map((c: string) => c.split(";")[0].trim())
+			.filter((c: string) => c.length > 0);
+		// Merge with our CONSENT cookie
+		cookieParts.push("CONSENT=YES+cb.20210328-17-p0.en+FX+{}");
+		this.lastWatchPageCookies = cookieParts.join("; ");
+		console.log(
+			`🍪 Extracted cookies: ${this.lastWatchPageCookies.substring(0, 150)}...`,
+		);
 
 		// Cache for potential reuse by get_transcript fallback
 		this.lastWatchPageHtml = html;
@@ -761,12 +786,16 @@ export class YoutubeTranscript {
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
+		// Use cookies from watch page session (critical for timedtext authentication)
+		const cookieHeader =
+			this.lastWatchPageCookies ||
+			"CONSENT=YES+cb.20210328-17-p0.en+FX+{}";
 		const headers: Record<string, string> = {
 			"User-Agent":
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 			"Accept-Language": "en-US,en;q=0.9",
 			"Accept-Encoding": "identity",
-			Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
+			Cookie: cookieHeader,
 		};
 
 		// Strategy: try multiple URL variations until one returns parseable content
