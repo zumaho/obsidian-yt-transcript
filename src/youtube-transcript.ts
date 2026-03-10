@@ -1,5 +1,9 @@
 import { requestUrl } from "obsidian";
-import { parseTranscriptXml } from "./api-parser";
+import {
+	parseTranscriptXml,
+	getCaptionTracksFromPage,
+	extractVideoTitle,
+} from "./api-parser";
 import type { TranscriptConfig, TranscriptResponse } from "./types";
 import { YoutubeTranscriptError } from "./types";
 
@@ -151,12 +155,22 @@ export class YoutubeTranscript {
 	}
 
 	/**
-	 * Tries ANDROID client first, then falls back to WEB client on failure.
+	 * Tries watch page scraping first, then ANDROID client, then WEB client.
 	 */
 	private static async fetchPlayerDataWithFallback(
 		videoId: string,
 		config?: TranscriptConfig,
 	): Promise<any> {
+		// Try watch page scraping first (most reliable)
+		try {
+			return await this.fetchPlayerDataFromWatchPage(videoId, config);
+		} catch (watchPageError: any) {
+			console.log(
+				`⚠️ Watch page scraping failed: ${watchPageError.message}. Trying InnerTube API...`,
+			);
+		}
+
+		// Fall back to InnerTube API
 		try {
 			return await this.fetchPlayerData(videoId, "ANDROID", config);
 		} catch (androidError: any) {
@@ -166,10 +180,163 @@ export class YoutubeTranscript {
 			try {
 				return await this.fetchPlayerData(videoId, "WEB", config);
 			} catch (webError: any) {
-				// Throw the original ANDROID error if both fail, as it's usually more informative
 				throw androidError;
 			}
 		}
+	}
+
+	/**
+	 * Fetches player data by scraping the YouTube watch page HTML.
+	 * Extracts ytInitialPlayerResponse to get caption track URLs.
+	 */
+	private static async fetchPlayerDataFromWatchPage(
+		videoId: string,
+		config?: TranscriptConfig,
+	): Promise<any> {
+		const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+		const langCode = config?.lang || "en";
+
+		console.log(`🌐 Fetching watch page: ${watchUrl}`);
+
+		const response = await requestUrl({
+			url: watchUrl,
+			method: "GET",
+			headers: {
+				"User-Agent":
+					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				"Accept-Language": `${langCode},en;q=0.9`,
+			},
+		});
+
+		const html = response.text;
+		if (!html || html.length === 0) {
+			throw new Error("Empty response from YouTube watch page");
+		}
+
+		console.log(
+			`📄 Watch page response: ${html.length} bytes`,
+		);
+
+		// Try to extract ytInitialPlayerResponse directly
+		const playerResponseMatch = html.match(
+			/ytInitialPlayerResponse\s*=\s*(\{.+?\});\s*(?:var\s|<\/script>)/s,
+		);
+
+		if (playerResponseMatch) {
+			try {
+				let playerData;
+				try {
+					playerData = JSON.parse(playerResponseMatch[1]);
+				} catch {
+					// If initial parse fails, try brace-matching
+					playerData = this.extractJsonFromHtml(
+						html,
+						"ytInitialPlayerResponse",
+					);
+				}
+
+				if (playerData) {
+					// Check playability
+					const status = playerData.playabilityStatus?.status;
+					if (status === "ERROR") {
+						throw new Error(
+							playerData.playabilityStatus?.reason ||
+								"Video unavailable",
+						);
+					}
+					if (status === "LOGIN_REQUIRED") {
+						throw new Error(
+							"This video requires login to view",
+						);
+					}
+
+					if (
+						playerData.captions
+							?.playerCaptionsTracklistRenderer
+							?.captionTracks
+					) {
+						// Extract title
+						if (!playerData.videoDetails?.title) {
+							const title = extractVideoTitle(html);
+							if (title) {
+								playerData.videoDetails =
+									playerData.videoDetails || {};
+								playerData.videoDetails.title = title;
+							}
+						}
+						console.log(
+							`✅ Extracted player data from ytInitialPlayerResponse`,
+						);
+						return playerData;
+					}
+				}
+			} catch (e: any) {
+				if (
+					e.message.includes("unavailable") ||
+					e.message.includes("login")
+				) {
+					throw e;
+				}
+				console.log(
+					`⚠️ Failed to parse ytInitialPlayerResponse: ${e.message}`,
+				);
+			}
+		}
+
+		// Fall back to extracting caption tracks from page HTML using api-parser
+		const captionTracks = getCaptionTracksFromPage(html, langCode);
+		if (captionTracks.length > 0) {
+			const title = extractVideoTitle(html) || "Unknown";
+			console.log(
+				`✅ Extracted ${captionTracks.length} caption tracks from page HTML`,
+			);
+			// Build a player-data-like structure
+			return {
+				videoDetails: { title },
+				captions: {
+					playerCaptionsTracklistRenderer: {
+						captionTracks: captionTracks.map((t) => ({
+							baseUrl: t.baseUrl,
+							name: { simpleText: t.name },
+							languageCode: t.languageCode,
+							isTranslatable: t.isTranslatable,
+						})),
+					},
+				},
+			};
+		}
+
+		throw new Error(
+			"Could not extract caption data from watch page",
+		);
+	}
+
+	/**
+	 * Extracts a JSON object from HTML by matching braces starting from a variable assignment.
+	 */
+	private static extractJsonFromHtml(
+		html: string,
+		varName: string,
+	): any {
+		const searchStr = `${varName}`;
+		const varIdx = html.indexOf(searchStr);
+		if (varIdx === -1) return null;
+
+		const startIdx = html.indexOf("{", varIdx);
+		if (startIdx === -1) return null;
+
+		let braceCount = 0;
+		let endIdx = startIdx;
+		for (let i = startIdx; i < html.length; i++) {
+			if (html[i] === "{") braceCount++;
+			if (html[i] === "}") braceCount--;
+			if (braceCount === 0) {
+				endIdx = i + 1;
+				break;
+			}
+		}
+
+		return JSON.parse(html.substring(startIdx, endIdx));
 	}
 
 	/**
