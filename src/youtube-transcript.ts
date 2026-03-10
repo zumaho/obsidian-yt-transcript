@@ -464,15 +464,34 @@ export class YoutubeTranscript {
 	}
 
 	/**
+	 * Cleans a caption track URL to ensure it returns XML format.
+	 * Strips fmt=srv3 (JSON format) and ensures proper format for XML parsing.
+	 */
+	private static cleanTranscriptUrl(transcriptUrl: string): string {
+		let url = transcriptUrl;
+		// Remove fmt=srv3 or any fmt parameter (we want default XML format)
+		url = url.replace(/([?&])fmt=[^&]*(&|$)/, (_, prefix, suffix) =>
+			suffix ? prefix : "",
+		);
+		// Remove trailing & or ? if we stripped the last param
+		url = url.replace(/[?&]$/, "");
+		return url;
+	}
+
+	/**
 	 * Fetches transcript XML from the caption track URL
 	 */
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
+		const cleanUrl = this.cleanTranscriptUrl(transcriptUrl);
+
 		const response = await requestUrl({
-			url: transcriptUrl,
+			url: cleanUrl,
 			method: "GET",
 			headers: {
+				"User-Agent":
+					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 				"Accept-Language": "en-US,en;q=0.9",
 			},
 		});
