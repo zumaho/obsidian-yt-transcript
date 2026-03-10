@@ -1,3 +1,4 @@
+import * as protobuf from "protobufjs";
 import type { TranscriptLine } from "./types";
 import { YoutubeTranscriptError } from "./types";
 
@@ -359,4 +360,119 @@ export function parseTranscript(responseContent: string): TranscriptLine[] {
 			`Failed to parse API response: ${error}`,
 		);
 	}
+}
+
+/**
+ * Extract getTranscriptEndpoint.params from ytInitialData in YouTube page HTML.
+ * These params can be used with the get_transcript API endpoint.
+ */
+export function extractTranscriptParams(htmlContent: string): string | null {
+	const patterns = [
+		/var ytInitialData\s*=\s*({.+?});/s,
+		/window\.ytInitialData\s*=\s*({.+?});/s,
+		/ytInitialData\s*=\s*({.+?});/s,
+	];
+
+	for (const pattern of patterns) {
+		const match = htmlContent.match(pattern);
+		if (!match) continue;
+
+		try {
+			// Try JSON parse first, fall back to brace matching
+			let data;
+			try {
+				data = JSON.parse(match[1]);
+			} catch {
+				const startIdx = htmlContent.indexOf(match[0]);
+				const searchStart = htmlContent.indexOf("{", startIdx);
+				let braceCount = 0;
+				let endIdx = searchStart;
+				for (let i = searchStart; i < htmlContent.length; i++) {
+					if (htmlContent[i] === "{") braceCount++;
+					if (htmlContent[i] === "}") braceCount--;
+					if (braceCount === 0) {
+						endIdx = i + 1;
+						break;
+					}
+				}
+				data = JSON.parse(htmlContent.substring(searchStart, endIdx));
+			}
+
+			const params = findNestedValue(data, "getTranscriptEndpoint", "params");
+			if (params && typeof params === "string" && params.length > 10) {
+				return params;
+			}
+		} catch {
+			continue;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Recursively search for a nested key path in an object.
+ */
+function findNestedValue(obj: any, key: string, subKey: string): any {
+	if (!obj || typeof obj !== "object") return null;
+
+	if (obj[key] && obj[key][subKey]) {
+		return obj[key][subKey];
+	}
+
+	for (const value of Object.values(obj)) {
+		if (value && typeof value === "object") {
+			const result = findNestedValue(value, key, subKey);
+			if (result) return result;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Extract visitorData from YouTube page HTML for API authentication.
+ */
+export function extractVisitorData(htmlContent: string): string | null {
+	const match = htmlContent.match(/"visitorData"\s*:\s*"([^"]+)"/);
+	return match ? match[1] : null;
+}
+
+/**
+ * Generate protobuf-encoded transcript params for the get_transcript API.
+ * Returns multiple param variations to try.
+ */
+export function generateTranscriptParams(
+	videoId: string,
+	lang: string = "en",
+): string[] {
+	const variations = [
+		{ useAsr: true, field6: 1 },
+		{ useAsr: false, field6: 0 },
+		{ useAsr: true, field6: 0 },
+		{ useAsr: false, field6: 1 },
+	];
+
+	return variations.map(({ useAsr, field6 }) => {
+		const writer = protobuf.Writer.create();
+
+		// Field 1: Video ID
+		writer.uint32(10).string(videoId);
+		// Field 2: Context data (base64-encoded language info)
+		const contextData = useAsr ? "CgNhc3ISAmVuGgA%3D" : "CgASAmVuGgA%3D";
+		writer.uint32(18).string(contextData);
+		// Field 3: constant 1
+		writer.uint32(24).uint32(1);
+		// Field 5: panel identifier
+		writer.uint32(42).string("engagement-panel-searchable-transcript-search-panel");
+		// Field 6: variant
+		writer.uint32(48).uint32(field6);
+		// Field 7: constant 1
+		writer.uint32(56).uint32(1);
+		// Field 8: constant 1
+		writer.uint32(64).uint32(1);
+
+		const buffer = writer.finish();
+		return Buffer.from(buffer).toString("base64").replace(/=/g, "%3D");
+	});
 }

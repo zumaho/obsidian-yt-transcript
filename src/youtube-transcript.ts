@@ -2,8 +2,12 @@ import { requestUrl } from "obsidian";
 import {
 	parseTranscriptXml,
 	parseTranscriptJson3,
+	parseTranscript,
 	getCaptionTracksFromPage,
 	extractVideoTitle,
+	extractTranscriptParams,
+	extractVisitorData,
+	generateTranscriptParams,
 } from "./api-parser";
 import type { TranscriptConfig, TranscriptResponse } from "./types";
 import { YoutubeTranscriptError } from "./types";
@@ -50,6 +54,9 @@ export class YoutubeTranscript {
 	// Player params to bypass ANDROID client integrity checks (NewPipe workaround)
 	private static readonly ANDROID_PLAYER_PARAMS = "CgIQBg";
 
+	// Store watch page HTML for reuse between methods
+	private static lastWatchPageHtml: string = "";
+
 	public static async getTranscript(
 		url: string,
 		config?: TranscriptConfig,
@@ -67,83 +74,240 @@ export class YoutubeTranscript {
 
 			console.log(`🎬 Fetching transcript for video: ${videoId}`);
 
-			// Fetch player data, trying ANDROID client first, then WEB fallback
-			const playerData = await this.fetchPlayerDataWithFallback(
-				videoId,
-				config,
-			);
-
-			// Extract video metadata
-			const title = playerData.videoDetails?.title || "Unknown";
-
-			// Get caption tracks
-			const captionsData =
-				playerData.captions?.playerCaptionsTracklistRenderer;
-			if (!captionsData || !captionsData.captionTracks) {
-				throw new YoutubeTranscriptError(
-					new Error("No captions available for this video"),
+			// Strategy 1: Try caption track URLs (timedtext API)
+			try {
+				const result = await this.fetchViaTimedText(videoId, config);
+				if (result) return result;
+			} catch (timedTextError: any) {
+				console.log(
+					`⚠️ Timedtext approach failed: ${timedTextError.message}`,
 				);
 			}
 
+			// Strategy 2: Try get_transcript endpoint (protobuf params)
 			console.log(
-				`📝 Found ${captionsData.captionTracks.length} caption track(s)`,
+				`🔄 Trying get_transcript endpoint as fallback...`,
 			);
-
-			// Find the best matching caption track
-			const langCode = config?.lang || "en";
-			const captionTrack = this.findCaptionTrack(
-				captionsData.captionTracks,
-				langCode,
-			);
-			if (!captionTrack) {
-				const availableLangs = captionsData.captionTracks
-					.map((t: any) => t.languageCode)
-					.join(", ");
-				throw new YoutubeTranscriptError(
-					new Error(
-						`No transcript found for language '${langCode}'. Available: ${availableLangs}`,
-					),
+			try {
+				const result = await this.fetchViaGetTranscript(
+					videoId,
+					config,
+				);
+				if (result) return result;
+			} catch (getTranscriptError: any) {
+				console.log(
+					`⚠️ get_transcript approach failed: ${getTranscriptError.message}`,
 				);
 			}
 
-			const trackName =
-				captionTrack.name?.runs?.[0]?.text ||
-				captionTrack.name?.simpleText ||
-				captionTrack.languageCode;
-			console.log(
-				`🔄 Using caption track: ${trackName} (${captionTrack.languageCode})`,
+			throw new YoutubeTranscriptError(
+				new Error(
+					"All transcript fetching methods failed. The video may not have captions available.",
+				),
 			);
-
-			// Fetch the actual transcript from the caption URL
-			const transcriptUrl = captionTrack.baseUrl;
-			console.log(
-				`📥 Fetching transcript from: ${transcriptUrl.substring(0, 80)}...`,
-			);
-
-			const lines = await this.fetchTranscriptFromUrl(transcriptUrl);
-
-			if (lines.length === 0) {
-				throw new YoutubeTranscriptError(
-					new Error(
-						"Transcript response contained no parseable caption lines",
-					),
-				);
-			}
-
-			console.log(
-				`✅ Successfully fetched ${lines.length} transcript lines`,
-			);
-
-			return {
-				title: this.decodeHTML(title),
-				lines,
-			};
 		} catch (err: any) {
 			if (err instanceof YoutubeTranscriptError) {
 				throw err;
 			}
 			throw new YoutubeTranscriptError(err);
 		}
+	}
+
+	/**
+	 * Strategy 1: Fetch transcript via timedtext caption URLs.
+	 */
+	private static async fetchViaTimedText(
+		videoId: string,
+		config?: TranscriptConfig,
+	): Promise<TranscriptResponse | null> {
+		// Fetch player data, trying watch page first, then InnerTube
+		const playerData = await this.fetchPlayerDataWithFallback(
+			videoId,
+			config,
+		);
+
+		// Extract video metadata
+		const title = playerData.videoDetails?.title || "Unknown";
+
+		// Get caption tracks
+		const captionsData =
+			playerData.captions?.playerCaptionsTracklistRenderer;
+		if (!captionsData || !captionsData.captionTracks) {
+			throw new Error("No captions available for this video");
+		}
+
+		console.log(
+			`📝 Found ${captionsData.captionTracks.length} caption track(s)`,
+		);
+
+		// Find the best matching caption track
+		const langCode = config?.lang || "en";
+		const captionTrack = this.findCaptionTrack(
+			captionsData.captionTracks,
+			langCode,
+		);
+		if (!captionTrack) {
+			const availableLangs = captionsData.captionTracks
+				.map((t: any) => t.languageCode)
+				.join(", ");
+			throw new Error(
+				`No transcript found for language '${langCode}'. Available: ${availableLangs}`,
+			);
+		}
+
+		const trackName =
+			captionTrack.name?.runs?.[0]?.text ||
+			captionTrack.name?.simpleText ||
+			captionTrack.languageCode;
+		console.log(
+			`🔄 Using caption track: ${trackName} (${captionTrack.languageCode})`,
+		);
+
+		// Fetch the actual transcript from the caption URL
+		const transcriptUrl = captionTrack.baseUrl;
+		console.log(
+			`📥 Fetching transcript from: ${transcriptUrl.substring(0, 80)}...`,
+		);
+
+		const lines = await this.fetchTranscriptFromUrl(transcriptUrl);
+
+		if (lines.length === 0) {
+			throw new Error(
+				"Transcript response contained no parseable caption lines",
+			);
+		}
+
+		console.log(
+			`✅ Successfully fetched ${lines.length} transcript lines`,
+		);
+
+		return {
+			title: this.decodeHTML(title),
+			lines,
+		};
+	}
+
+	/**
+	 * Strategy 2: Fetch transcript via YouTube's get_transcript endpoint.
+	 * Uses protobuf-encoded params extracted from the page or generated.
+	 */
+	private static async fetchViaGetTranscript(
+		videoId: string,
+		config?: TranscriptConfig,
+	): Promise<TranscriptResponse | null> {
+		const langCode = config?.lang || "en";
+
+		// Get watch page HTML (may already be cached from strategy 1)
+		let html = this.lastWatchPageHtml;
+		if (!html) {
+			const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+			console.log(`🌐 Fetching watch page for get_transcript: ${watchUrl}`);
+			const response = await requestUrl({
+				url: watchUrl,
+				method: "GET",
+				headers: {
+					"User-Agent":
+						"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+					"Accept-Language": `${langCode},en;q=0.9`,
+					Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
+				},
+			});
+			html = response.text;
+		}
+
+		// Extract title
+		const titleMatch = html.match(
+			/<meta\s+name="title"\s+content="([^"]*)\">/,
+		);
+		const title = titleMatch ? titleMatch[1] : "Unknown";
+
+		// Extract visitorData for authentication
+		const visitorData =
+			extractVisitorData(html) ||
+			"Cgs5LXVQa0I1YnhHOCjZ7ZDDBjInCgJQTBIhEh0SGwsMDg8QERITFBUWFxgZGhscHR4fICEiIyQlJiAS";
+
+		// Build list of params to try: page params first, then generated fallbacks
+		const paramsList: string[] = [];
+		const pageParams = extractTranscriptParams(html);
+		if (pageParams) {
+			console.log(
+				`✅ Found transcript params from page (${pageParams.length} chars)`,
+			);
+			paramsList.push(pageParams);
+		}
+		const generatedParams = generateTranscriptParams(videoId, langCode);
+		paramsList.push(...generatedParams);
+
+		console.log(
+			`🔄 Trying ${paramsList.length} param combinations with get_transcript API...`,
+		);
+
+		const apiUrl =
+			"https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false";
+		const headers = {
+			"Content-Type": "application/json",
+			"User-Agent":
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+			Accept: "*/*",
+			"Accept-Language": "en-US,en;q=0.9",
+			"X-Youtube-Client-Name": "1",
+			"X-Youtube-Client-Version": "2.20250313.00.00",
+			"X-Goog-EOM-Visitor-Id": visitorData,
+			Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
+		};
+
+		for (let i = 0; i < paramsList.length; i++) {
+			const params = paramsList[i];
+			const source = i === 0 && pageParams ? "page" : `generated-${i}`;
+
+			try {
+				console.log(
+					`🎯 Attempt ${i + 1}/${paramsList.length} (${source}): ${params.substring(0, 30)}...`,
+				);
+
+				const requestBody = {
+					context: {
+						client: {
+							clientName: "WEB",
+							clientVersion: "2.20250313.00.00",
+							hl: langCode,
+							gl: config?.country || "US",
+						},
+					},
+					params: params,
+				};
+
+				const response = await requestUrl({
+					url: apiUrl,
+					method: "POST",
+					headers,
+					body: JSON.stringify(requestBody),
+				});
+
+				console.log(
+					`📄 get_transcript response (${source}): ${response.text.length} bytes`,
+				);
+
+				const lines = parseTranscript(response.text);
+				if (lines && lines.length > 0) {
+					console.log(
+						`✅ SUCCESS: Found ${lines.length} lines via get_transcript (${source})`,
+					);
+					return {
+						title: this.decodeHTML(title),
+						lines,
+					};
+				}
+			} catch (e: any) {
+				console.log(
+					`❌ Attempt ${i + 1} failed (${source}): ${e.message}`,
+				);
+			}
+		}
+
+		throw new Error(
+			"All get_transcript parameter combinations failed",
+		);
 	}
 
 	/**
@@ -224,6 +388,9 @@ export class YoutubeTranscript {
 		if (!html || html.length === 0) {
 			throw new Error("Empty response from YouTube watch page");
 		}
+
+		// Cache for potential reuse by get_transcript fallback
+		this.lastWatchPageHtml = html;
 
 		console.log(
 			`📄 Watch page response: ${html.length} bytes`,
