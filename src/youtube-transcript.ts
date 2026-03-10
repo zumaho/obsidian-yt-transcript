@@ -7,6 +7,8 @@ import {
 	extractVideoTitle,
 	extractTranscriptParams,
 	extractVisitorData,
+	extractPoToken,
+	extractPoTokenFromPage,
 	generateTranscriptParams,
 } from "./api-parser";
 import type { TranscriptConfig, TranscriptResponse } from "./types";
@@ -54,9 +56,10 @@ export class YoutubeTranscript {
 	// Player params to bypass ANDROID client integrity checks (NewPipe workaround)
 	private static readonly ANDROID_PLAYER_PARAMS = "CgIQBg";
 
-	// Store watch page HTML and cookies for reuse between methods
+	// Store watch page HTML, cookies, and PO token for reuse between methods
 	private static lastWatchPageHtml: string = "";
 	private static lastWatchPageCookies: string = "";
+	private static lastPoToken: string = "";
 
 	public static async getTranscript(
 		url: string,
@@ -243,116 +246,116 @@ export class YoutubeTranscript {
 			`🔄 Trying ${paramsList.length} param combinations with get_transcript API...`,
 		);
 
-		const apiUrl = `https://www.youtube.com/youtubei/v1/get_transcript?key=${YoutubeTranscript.INNERTUBE_API_KEY}&prettyPrint=false`;
 		const clientVersion = "2.20250701.01.00";
 		const sessionCookies =
 			this.lastWatchPageCookies ||
 			"CONSENT=YES+cb.20210328-17-p0.en+FX+{}";
-		const headers: Record<string, string> = {
-			"Content-Type": "application/json",
-			"User-Agent":
-				"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
-			Accept: "*/*",
-			"Accept-Language": "en-US,en;q=0.9",
-			"X-Youtube-Client-Name": "1",
-			"X-Youtube-Client-Version": clientVersion,
-			"X-Goog-EOM-Visitor-Id": visitorData,
-			"X-Youtube-Bootstrap-Logged-In": "false",
-			"X-Origin": "https://www.youtube.com",
-			Origin: "https://www.youtube.com",
-			Referer: `https://www.youtube.com/watch?v=${videoId}`,
-			Cookie: sessionCookies,
-		};
 
-		for (let i = 0; i < paramsList.length; i++) {
-			const params = paramsList[i];
-			const source = i === 0 && pageParams ? "page" : `generated-${i}`;
+		// Try two API URL variations: without API key first (like youtube-transcript-api), then with
+		const apiUrlVariations = [
+			{ url: "https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false", label: "no-key" },
+			{ url: `https://www.youtube.com/youtubei/v1/get_transcript?key=${YoutubeTranscript.INNERTUBE_API_KEY}&prettyPrint=false`, label: "with-key" },
+		];
 
-			try {
-				console.log(
-					`🎯 Attempt ${i + 1}/${paramsList.length} (${source}): ${params.substring(0, 30)}...`,
-				);
+		for (const { url: apiUrl, label: apiLabel } of apiUrlVariations) {
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+				"User-Agent":
+					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				Accept: "*/*",
+				"Accept-Language": "en-US,en;q=0.9",
+				"X-Youtube-Client-Name": "1",
+				"X-Youtube-Client-Version": clientVersion,
+				"X-Goog-Visitor-Id": visitorData,
+				Origin: "https://www.youtube.com",
+				Referer: `https://www.youtube.com/watch?v=${videoId}`,
+				Cookie: sessionCookies,
+			};
 
-				const requestBody = {
-					context: {
-						client: {
-							clientName: "WEB",
-							clientVersion: clientVersion,
-							hl: langCode,
-							gl: config?.country || "US",
-							timeZone: "Asia/Tokyo",
-							visitorData: visitorData,
-							mainAppWebInfo: {
-								graftUrl: `https://www.youtube.com/watch?v=${videoId}`,
-								webDisplayMode: "WEB_DISPLAY_MODE_BROWSER",
-								isWebNativeShareAvailable: true,
+			for (let i = 0; i < paramsList.length; i++) {
+				const params = paramsList[i];
+				const source = `${apiLabel}/${i === 0 && pageParams ? "page" : `gen-${i}`}`;
+
+				try {
+					console.log(
+						`🎯 Attempt (${source}): ${params.substring(0, 30)}...`,
+					);
+
+					const requestBody = {
+						context: {
+							client: {
+								clientName: "WEB",
+								clientVersion: clientVersion,
+								hl: langCode,
+								gl: config?.country || "US",
+								visitorData: visitorData,
+								mainAppWebInfo: {
+									graftUrl: `https://www.youtube.com/watch?v=${videoId}`,
+									webDisplayMode: "WEB_DISPLAY_MODE_BROWSER",
+								},
+							},
+							user: {
+								lockedSafetyMode: false,
+							},
+							request: {
+								useSsl: true,
+								internalExperimentFlags: [],
+								consistencyTokenJars: [],
 							},
 						},
-						user: {
-							lockedSafetyMode: false,
-						},
-						request: {
-							useSsl: true,
-							internalExperimentFlags: [],
-							consistencyTokenJars: [],
-						},
-					},
-					params: params,
-				};
-
-				const response = await requestUrl({
-					url: apiUrl,
-					method: "POST",
-					headers,
-					body: JSON.stringify(requestBody),
-					throw: false,
-				});
-
-				console.log(
-					`📄 get_transcript response (${source}): status=${response.status}, ${response.text.length} bytes, preview: ${response.text.substring(0, 200)}`,
-				);
-
-				if (response.status >= 400) {
-					console.log(
-						`❌ Attempt ${i + 1} (${source}): HTTP ${response.status}, body: ${response.text.substring(0, 300)}`,
-					);
-					continue;
-				}
-
-				const lines = parseTranscript(response.text);
-				if (lines && lines.length > 0) {
-					console.log(
-						`✅ SUCCESS: Found ${lines.length} lines via get_transcript (${source})`,
-					);
-					return {
-						title: this.decodeHTML(title),
-						lines,
+						params: params,
 					};
+
+					const response = await requestUrl({
+						url: apiUrl,
+						method: "POST",
+						headers,
+						body: JSON.stringify(requestBody),
+						throw: false,
+					});
+
+					console.log(
+						`📄 get_transcript (${source}): status=${response.status}, ${response.text.length} bytes`,
+					);
+
+					if (response.status >= 400) {
+						console.log(
+							`❌ (${source}): HTTP ${response.status}, body: ${response.text.substring(0, 300)}`,
+						);
+						continue;
+					}
+
+					const lines = parseTranscript(response.text);
+					if (lines && lines.length > 0) {
+						console.log(
+							`✅ SUCCESS: Found ${lines.length} lines via get_transcript (${source})`,
+						);
+						return {
+							title: this.decodeHTML(title),
+							lines,
+						};
+					}
+
+					console.log(
+						`⚠️ (${source}): response parsed but 0 lines. Preview: ${response.text.substring(0, 200)}`,
+					);
+				} catch (e: any) {
+					let errorDetail = e.message || String(e);
+					try {
+						if (e.response) {
+							const errText =
+								typeof e.response === "string"
+									? e.response
+									: JSON.stringify(e.response).substring(0, 300);
+							errorDetail += ` | response: ${errText}`;
+						}
+						if (e.body) errorDetail += ` | body: ${String(e.body).substring(0, 300)}`;
+						if (e.text) errorDetail += ` | text: ${String(e.text).substring(0, 300)}`;
+					} catch {}
+					console.log(
+						`❌ (${source}) failed: ${errorDetail}`,
+					);
 				}
-			} catch (e: any) {
-				// Try to extract response body from error for debugging
-				let errorDetail = e.message || String(e);
-				try {
-					// Obsidian's requestUrl may attach response data to the error
-					if (e.response) {
-						const errText =
-							typeof e.response === "string"
-								? e.response
-								: JSON.stringify(e.response).substring(0, 300);
-						errorDetail += ` | response: ${errText}`;
-					}
-					// Some error objects have a body or text property
-					if (e.body) errorDetail += ` | body: ${String(e.body).substring(0, 300)}`;
-					if (e.text) errorDetail += ` | text: ${String(e.text).substring(0, 300)}`;
-					// Log all enumerable keys for debugging
-					const keys = Object.keys(e);
-					if (keys.length > 0) {
-						errorDetail += ` | keys: [${keys.join(",")}]`;
-					}
-				} catch {}
-				console.log(
-					`❌ Attempt ${i + 1} failed (${source}): ${errorDetail}`,
-				);
 			}
 		}
 
@@ -455,6 +458,15 @@ export class YoutubeTranscript {
 
 		// Cache for potential reuse by get_transcript fallback
 		this.lastWatchPageHtml = html;
+
+		// Extract and cache PO token (required for timedtext since ~May 2025)
+		const poToken = extractPoTokenFromPage(html);
+		if (poToken) {
+			this.lastPoToken = poToken;
+			console.log(`🔑 Extracted PO token from watch page (${poToken.length} chars): ${poToken.substring(0, 30)}...`);
+		} else {
+			console.log(`⚠️ No PO token found in watch page HTML`);
+		}
 
 		console.log(
 			`📄 Watch page response: ${html.length} bytes`,
@@ -662,6 +674,13 @@ export class YoutubeTranscript {
 			}
 		}
 
+		// Extract PO token from player response
+		const poToken = extractPoToken(data);
+		if (poToken) {
+			this.lastPoToken = poToken;
+			console.log(`🔑 Extracted PO token from ${clientType} player response (${poToken.length} chars)`);
+		}
+
 		// Verify captions are present in the response
 		if (!data.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
 			throw new Error(
@@ -707,11 +726,13 @@ export class YoutubeTranscript {
 	}
 
 	/**
-	 * Normalizes a caption track URL: ensures absolute URL and optionally sets format.
+	 * Normalizes a caption track URL: ensures absolute URL, optionally sets format,
+	 * and adds PO token if available (required since May 2025).
 	 */
 	private static normalizeCaptionUrl(
 		transcriptUrl: string,
 		fmt?: string,
+		poToken?: string,
 	): string {
 		let url = transcriptUrl;
 		// Ensure absolute URL (some responses return relative paths)
@@ -727,6 +748,10 @@ export class YoutubeTranscript {
 			url = url.replace(/[?&]$/, "");
 			// Add the requested format
 			url += (url.includes("?") ? "&" : "?") + `fmt=${fmt}`;
+		}
+		// Add PO token if available and not already in URL (required since ~May 2025)
+		if (poToken && !url.includes("pot=")) {
+			url += (url.includes("?") ? "&" : "?") + `pot=${encodeURIComponent(poToken)}&potc=1&c=WEB&cver=2.20250701.01.00`;
 		}
 		return url;
 	}
@@ -782,10 +807,12 @@ export class YoutubeTranscript {
 	/**
 	 * Fetches transcript from the caption track URL.
 	 * Tries the URL as-is first, then with explicit format parameters.
+	 * Adds PO token to URLs if available (required since ~May 2025).
 	 */
 	private static async fetchTranscriptFromUrl(
 		transcriptUrl: string,
 	): Promise<any[]> {
+		const poToken = this.lastPoToken || "";
 		// Use cookies from watch page session
 		const cookieHeader =
 			this.lastWatchPageCookies ||
@@ -807,17 +834,26 @@ export class YoutubeTranscript {
 			Cookie: cookieHeader,
 		};
 
+		if (poToken) {
+			console.log(`🔑 Using PO token (${poToken.length} chars) for timedtext requests`);
+		} else {
+			console.log(`⚠️ No PO token available - timedtext may return empty (YouTube requires pot= since May 2025)`);
+		}
+
 		// Strategy: try multiple URL variations until one returns parseable content
+		// Include PO token in all variations (required since May 2025)
 		const urlVariations = [
-			{ url: this.normalizeCaptionUrl(transcriptUrl), label: "original" },
+			{ url: this.normalizeCaptionUrl(transcriptUrl, undefined, poToken), label: "original+pot" },
 			{
-				url: this.normalizeCaptionUrl(transcriptUrl, "json3"),
-				label: "json3",
+				url: this.normalizeCaptionUrl(transcriptUrl, "json3", poToken),
+				label: "json3+pot",
 			},
 			{
-				url: this.normalizeCaptionUrl(transcriptUrl, "srv1"),
-				label: "srv1 (XML)",
+				url: this.normalizeCaptionUrl(transcriptUrl, "srv1", poToken),
+				label: "srv1+pot",
 			},
+			// Also try without PO token as fallback (some videos may not require it)
+			{ url: this.normalizeCaptionUrl(transcriptUrl), label: "original (no pot)" },
 		];
 
 		let lastError: string = "";

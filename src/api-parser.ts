@@ -439,6 +439,74 @@ export function extractVisitorData(htmlContent: string): string | null {
 }
 
 /**
+ * Extract PO token from YouTube player response data.
+ * The PO token is required since ~May 2025 for timedtext (subtitle) API requests.
+ * Found at serviceIntegrityDimensions.poToken in the player response.
+ */
+export function extractPoToken(playerData: any): string | null {
+	const poToken =
+		playerData?.serviceIntegrityDimensions?.poToken;
+	if (poToken && typeof poToken === "string" && poToken.length > 10) {
+		return poToken;
+	}
+	return null;
+}
+
+/**
+ * Extract PO token from YouTube page HTML by parsing ytInitialPlayerResponse.
+ */
+export function extractPoTokenFromPage(htmlContent: string): string | null {
+	const patterns = [
+		/ytInitialPlayerResponse\s*=\s*(\{.+?\});\s*(?:var\s|<\/script>)/s,
+		/var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});\s*(?:var\s|<\/script>)/s,
+	];
+
+	for (const pattern of patterns) {
+		const match = htmlContent.match(pattern);
+		if (match) {
+			try {
+				let playerData;
+				try {
+					playerData = JSON.parse(match[1]);
+				} catch {
+					// Try brace-matching for truncated JSON
+					const startIdx = htmlContent.indexOf(match[0]);
+					const searchStart = htmlContent.indexOf("{", startIdx);
+					let braceCount = 0;
+					let endIdx = searchStart;
+					for (let i = searchStart; i < htmlContent.length; i++) {
+						if (htmlContent[i] === "{") braceCount++;
+						if (htmlContent[i] === "}") braceCount--;
+						if (braceCount === 0) {
+							endIdx = i + 1;
+							break;
+						}
+					}
+					playerData = JSON.parse(
+						htmlContent.substring(searchStart, endIdx),
+					);
+				}
+
+				const token = extractPoToken(playerData);
+				if (token) return token;
+			} catch {
+				continue;
+			}
+		}
+	}
+
+	// Also try regex extraction as a faster fallback
+	const directMatch = htmlContent.match(
+		/"serviceIntegrityDimensions"\s*:\s*\{[^}]*"poToken"\s*:\s*"([^"]+)"/,
+	);
+	if (directMatch && directMatch[1].length > 10) {
+		return directMatch[1];
+	}
+
+	return null;
+}
+
+/**
  * Generate protobuf-encoded transcript params for the get_transcript API.
  * Returns multiple param variations to try.
  */
