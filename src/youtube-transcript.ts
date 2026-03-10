@@ -21,16 +21,29 @@ export class YoutubeTranscript {
 		"AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 	private static readonly INNERTUBE_PLAYER_URL = `https://www.youtube.com/youtubei/v1/player?key=${YoutubeTranscript.INNERTUBE_API_KEY}`;
 
-	// Use ANDROID client like youtube-transcript-api does - it's less restricted
-	private static readonly INNERTUBE_CONTEXT = {
+	// ANDROID client context (matches youtube-transcript-api v1.2.3)
+	private static readonly ANDROID_CONTEXT = {
 		client: {
 			clientName: "ANDROID",
-			clientVersion: "19.09.37",
+			clientVersion: "20.10.38",
 			androidSdkVersion: 30,
 			hl: "en",
 			gl: "US",
 		},
 	};
+
+	// WEB client context used as fallback
+	private static readonly WEB_CONTEXT = {
+		client: {
+			clientName: "WEB",
+			clientVersion: "2.20240313.00.00",
+			hl: "en",
+			gl: "US",
+		},
+	};
+
+	// Player params to bypass ANDROID client integrity checks (NewPipe workaround)
+	private static readonly ANDROID_PLAYER_PARAMS = "CgIQBg";
 
 	public static async getTranscript(
 		url: string,
@@ -49,8 +62,11 @@ export class YoutubeTranscript {
 
 			console.log(`🎬 Fetching transcript for video: ${videoId}`);
 
-			// Fetch player data to get caption tracks
-			const playerData = await this.fetchPlayerData(videoId, config);
+			// Fetch player data, trying ANDROID client first, then WEB fallback
+			const playerData = await this.fetchPlayerDataWithFallback(
+				videoId,
+				config,
+			);
 
 			// Extract video metadata
 			const title = playerData.videoDetails?.title || "Unknown";
@@ -135,38 +151,84 @@ export class YoutubeTranscript {
 	}
 
 	/**
-	 * Fetches player data from YouTube's InnerTube API using ANDROID client
+	 * Tries ANDROID client first, then falls back to WEB client on failure.
 	 */
-	private static async fetchPlayerData(
+	private static async fetchPlayerDataWithFallback(
 		videoId: string,
 		config?: TranscriptConfig,
 	): Promise<any> {
+		try {
+			return await this.fetchPlayerData(videoId, "ANDROID", config);
+		} catch (androidError: any) {
+			console.log(
+				`⚠️ ANDROID client failed: ${androidError.message}. Trying WEB client...`,
+			);
+			try {
+				return await this.fetchPlayerData(videoId, "WEB", config);
+			} catch (webError: any) {
+				// Throw the original ANDROID error if both fail, as it's usually more informative
+				throw androidError;
+			}
+		}
+	}
+
+	/**
+	 * Fetches player data from YouTube's InnerTube API
+	 */
+	private static async fetchPlayerData(
+		videoId: string,
+		clientType: "ANDROID" | "WEB",
+		config?: TranscriptConfig,
+	): Promise<any> {
+		const baseContext =
+			clientType === "ANDROID"
+				? YoutubeTranscript.ANDROID_CONTEXT
+				: YoutubeTranscript.WEB_CONTEXT;
+
 		const context = {
-			...YoutubeTranscript.INNERTUBE_CONTEXT,
+			...baseContext,
 			client: {
-				...YoutubeTranscript.INNERTUBE_CONTEXT.client,
+				...baseContext.client,
 				hl: config?.lang || "en",
 				gl: config?.country || "US",
 			},
 		};
 
-		const requestBody = {
+		const requestBody: Record<string, any> = {
 			context: context,
 			videoId: videoId,
 		};
 
-		console.log(`🔄 Calling InnerTube Player API with ANDROID client...`);
+		// Add player params for ANDROID to bypass integrity checks
+		if (clientType === "ANDROID") {
+			requestBody.params = YoutubeTranscript.ANDROID_PLAYER_PARAMS;
+		}
 
-		const response = await requestUrl({
-			url: YoutubeTranscript.INNERTUBE_PLAYER_URL,
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"User-Agent":
-					"com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
-			},
-			body: JSON.stringify(requestBody),
-		});
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (clientType === "ANDROID") {
+			headers["User-Agent"] =
+				"com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
+		}
+
+		console.log(
+			`🔄 Calling InnerTube Player API with ${clientType} client...`,
+		);
+
+		let response;
+		try {
+			response = await requestUrl({
+				url: YoutubeTranscript.INNERTUBE_PLAYER_URL,
+				method: "POST",
+				headers,
+				body: JSON.stringify(requestBody),
+			});
+		} catch (err: any) {
+			throw new Error(
+				`HTTP request failed for ${clientType} client: ${err.message || err}`,
+			);
+		}
 
 		const data = JSON.parse(response.text);
 
@@ -188,6 +250,13 @@ export class YoutubeTranscript {
 					playabilityStatus.reason || "Video is unplayable",
 				);
 			}
+		}
+
+		// Verify captions are present in the response
+		if (!data.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
+			throw new Error(
+				`No captions returned by ${clientType} client`,
+			);
 		}
 
 		return data;
