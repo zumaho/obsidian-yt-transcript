@@ -383,33 +383,86 @@ export class YoutubeTranscript {
 	}
 
 	/**
-	 * Tries watch page scraping first, then ANDROID client, then WEB client.
+	 * Tries ANDROID client first (no PO token needed), then watch page, then WEB client.
+	 * ANDROID InnerTube client returns caption URLs that work without PO tokens,
+	 * unlike WEB/watch page URLs which require pot= parameter since May 2025.
 	 */
 	private static async fetchPlayerDataWithFallback(
 		videoId: string,
 		config?: TranscriptConfig,
 	): Promise<any> {
-		// Try watch page scraping first (most reliable)
+		// Try ANDROID InnerTube client first (caption URLs don't require PO token)
+		try {
+			console.log(`📱 Trying ANDROID client first (no PO token needed)...`);
+			const data = await this.fetchPlayerData(videoId, "ANDROID", config);
+			// Also fetch watch page in parallel for get_transcript fallback data
+			this.prefetchWatchPage(videoId, config).catch(() => {});
+			return data;
+		} catch (androidError: any) {
+			console.log(
+				`⚠️ ANDROID client failed: ${androidError.message}. Trying watch page...`,
+			);
+		}
+
+		// Fall back to watch page scraping (may need PO token for timedtext)
 		try {
 			return await this.fetchPlayerDataFromWatchPage(videoId, config);
 		} catch (watchPageError: any) {
 			console.log(
-				`⚠️ Watch page scraping failed: ${watchPageError.message}. Trying InnerTube API...`,
+				`⚠️ Watch page scraping failed: ${watchPageError.message}. Trying WEB client...`,
 			);
 		}
 
-		// Fall back to InnerTube API
+		// Last resort: WEB InnerTube client
 		try {
-			return await this.fetchPlayerData(videoId, "ANDROID", config);
-		} catch (androidError: any) {
-			console.log(
-				`⚠️ ANDROID client failed: ${androidError.message}. Trying WEB client...`,
+			return await this.fetchPlayerData(videoId, "WEB", config);
+		} catch (webError: any) {
+			throw new Error(
+				"All player data sources failed (ANDROID, watch page, WEB)",
 			);
-			try {
-				return await this.fetchPlayerData(videoId, "WEB", config);
-			} catch (webError: any) {
-				throw androidError;
+		}
+	}
+
+	/**
+	 * Prefetch watch page HTML in background for get_transcript fallback.
+	 * This caches the HTML, cookies, and PO token without blocking the main flow.
+	 */
+	private static async prefetchWatchPage(
+		videoId: string,
+		config?: TranscriptConfig,
+	): Promise<void> {
+		if (this.lastWatchPageHtml) return; // Already cached
+		try {
+			const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+			const langCode = config?.lang || "en";
+			const response = await requestUrl({
+				url: watchUrl,
+				method: "GET",
+				headers: {
+					"User-Agent":
+						"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+					"Accept-Language": `${langCode},en;q=0.9`,
+					Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
+				},
+			});
+			const html = response.text;
+			if (html && html.length > 0) {
+				this.lastWatchPageHtml = html;
+				// Extract cookies
+				const setCookies = response.headers["set-cookie"] || "";
+				const cookieParts = setCookies
+					.split(/,(?=[^ ])/g)
+					.map((c: string) => c.split(";")[0].trim())
+					.filter((c: string) => c.length > 0);
+				cookieParts.push("CONSENT=YES+cb.20210328-17-p0.en+FX+{}");
+				this.lastWatchPageCookies = cookieParts.join("; ");
+				// Extract PO token
+				const poToken = extractPoTokenFromPage(html);
+				if (poToken) this.lastPoToken = poToken;
+				console.log(`📋 Watch page prefetched (${html.length} bytes, PO token: ${poToken ? "found" : "not found"})`);
 			}
+		} catch (e: any) {
+			console.log(`⚠️ Watch page prefetch failed: ${e.message}`);
 		}
 	}
 
@@ -813,48 +866,37 @@ export class YoutubeTranscript {
 		transcriptUrl: string,
 	): Promise<any[]> {
 		const poToken = this.lastPoToken || "";
-		// Use cookies from watch page session
-		const cookieHeader =
-			this.lastWatchPageCookies ||
-			"CONSENT=YES+cb.20210328-17-p0.en+FX+{}";
-		// Include browser-like headers that YouTube may check
+		// Use minimal headers (like youtube-transcript-api Python library)
+		// ANDROID client caption URLs don't need browser-like headers
 		const headers: Record<string, string> = {
 			"User-Agent":
-				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+				"com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
 			"Accept-Language": "en-US,en;q=0.9",
-			"Accept-Encoding": "identity",
-			Referer: "https://www.youtube.com/",
-			Origin: "https://www.youtube.com",
-			"Sec-Fetch-Dest": "empty",
-			"Sec-Fetch-Mode": "cors",
-			"Sec-Fetch-Site": "same-origin",
-			"Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
-			"Sec-Ch-Ua-Mobile": "?0",
-			"Sec-Ch-Ua-Platform": '"Windows"',
-			Cookie: cookieHeader,
 		};
 
-		if (poToken) {
-			console.log(`🔑 Using PO token (${poToken.length} chars) for timedtext requests`);
-		} else {
-			console.log(`⚠️ No PO token available - timedtext may return empty (YouTube requires pot= since May 2025)`);
-		}
-
-		// Strategy: try multiple URL variations until one returns parseable content
-		// Include PO token in all variations (required since May 2025)
+		// Strategy: try the URL as-is first (ANDROID URLs work without PO token),
+		// then with PO token if available (for WEB URLs), then format variations
 		const urlVariations = [
-			{ url: this.normalizeCaptionUrl(transcriptUrl, undefined, poToken), label: "original+pot" },
+			// ANDROID client URLs should work as-is without PO token
+			{ url: this.normalizeCaptionUrl(transcriptUrl), label: "original" },
 			{
-				url: this.normalizeCaptionUrl(transcriptUrl, "json3", poToken),
-				label: "json3+pot",
+				url: this.normalizeCaptionUrl(transcriptUrl, "json3"),
+				label: "json3",
 			},
 			{
-				url: this.normalizeCaptionUrl(transcriptUrl, "srv1", poToken),
-				label: "srv1+pot",
+				url: this.normalizeCaptionUrl(transcriptUrl, "srv1"),
+				label: "srv1 (XML)",
 			},
-			// Also try without PO token as fallback (some videos may not require it)
-			{ url: this.normalizeCaptionUrl(transcriptUrl), label: "original (no pot)" },
 		];
+
+		// If we have a PO token, also try WEB-style URLs with pot= as fallback
+		if (poToken) {
+			console.log(`🔑 PO token available (${poToken.length} chars) - will try pot= URLs as fallback`);
+			urlVariations.push(
+				{ url: this.normalizeCaptionUrl(transcriptUrl, undefined, poToken), label: "original+pot" },
+				{ url: this.normalizeCaptionUrl(transcriptUrl, "json3", poToken), label: "json3+pot" },
+			);
+		}
 
 		let lastError: string = "";
 		let lastResponsePreview: string = "";

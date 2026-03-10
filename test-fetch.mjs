@@ -238,9 +238,84 @@ if (pageParams && visitorData) {
 }
 
 // ============================================================
-// Step 5: IOS InnerTube client (may have different PO token behavior)
+// Step 5: ⭐ ANDROID InnerTube client (KEY TEST - like youtube-transcript-api)
+// This is the approach used by youtube-transcript-api Python library.
+// ANDROID caption URLs should work WITHOUT PO token.
 // ============================================================
-console.log("\n=== Step 5: IOS InnerTube client ===");
+console.log("\n=== Step 5: ⭐ ANDROID InnerTube client (KEY TEST) ===");
+const androidRes = await fetch(
+	"https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false",
+	{
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+		},
+		body: JSON.stringify({
+			context: {
+				client: {
+					clientName: "ANDROID",
+					clientVersion: "20.10.38",
+					androidSdkVersion: 30,
+					hl: "en", gl: "US",
+				},
+			},
+			videoId: videoId,
+			params: "CgIQBg",
+		}),
+	},
+);
+const androidData = JSON.parse(await androidRes.text());
+console.log(`ANDROID player status: ${androidData.playabilityStatus?.status}`);
+
+const androidCaptions = androidData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+if (androidCaptions && androidCaptions.length > 0) {
+	console.log(`ANDROID caption tracks: ${androidCaptions.length}`);
+	for (const t of androidCaptions.slice(0, 3)) {
+		let url = t.baseUrl.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+			String.fromCharCode(parseInt(hex, 16)));
+		console.log(`\n  ${t.languageCode} (${t.name?.simpleText || t.name?.runs?.[0]?.text || "?"}):`);
+		console.log(`    has pot=${url.includes("pot=")} (${url.length} chars)`);
+
+		// Try fetching ANDROID caption URL with minimal headers (like youtube-transcript-api)
+		console.log("    --- Fetching with ANDROID user-agent (minimal headers) ---");
+		const r = await fetch(url, {
+			headers: {
+				"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+				"Accept-Language": "en-US,en;q=0.9",
+			},
+		});
+		const body = await r.text();
+		console.log(`    status=${r.status}, body=${body.length} bytes`);
+		if (body.length > 0 && body.length < 200) console.log(`    Body: ${body}`);
+		if (body.length >= 200) console.log(`    ✅ Preview: ${body.substring(0, 150)}`);
+
+		// If original fails, try json3 format
+		if (body.length === 0) {
+			console.log("    --- Retrying with fmt=json3 ---");
+			const json3Url = url.replace(/([?&])fmt=[^&]*(&|$)/, (_, p, s) => s ? p : "").replace(/[?&]$/, "") + "&fmt=json3";
+			const r2 = await fetch(json3Url, {
+				headers: {
+					"User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+					"Accept-Language": "en-US,en;q=0.9",
+				},
+			});
+			const b2 = await r2.text();
+			console.log(`    status=${r2.status}, body=${b2.length} bytes`);
+			if (b2.length > 0) console.log(`    ✅ json3 Preview: ${b2.substring(0, 150)}`);
+		}
+	}
+} else {
+	console.log(`No ANDROID captions. Status: ${androidData.playabilityStatus?.status}, reason: ${androidData.playabilityStatus?.reason || "none"}`);
+	if (androidData.playabilityStatus?.status) {
+		console.log(`Full playability: ${JSON.stringify(androidData.playabilityStatus).substring(0, 300)}`);
+	}
+}
+
+// ============================================================
+// Step 6: IOS InnerTube client (additional test)
+// ============================================================
+console.log("\n=== Step 6: IOS InnerTube client ===");
 const iosRes = await fetch(
 	"https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false",
 	{
