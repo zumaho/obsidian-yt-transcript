@@ -469,6 +469,10 @@ export class YoutubeTranscript {
 	 */
 	private static cleanTranscriptUrl(transcriptUrl: string): string {
 		let url = transcriptUrl;
+		// Ensure absolute URL (some responses return relative paths)
+		if (url.startsWith("/")) {
+			url = "https://www.youtube.com" + url;
+		}
 		// Remove fmt=srv3 or any fmt parameter (we want default XML format)
 		url = url.replace(/([?&])fmt=[^&]*(&|$)/, (_, prefix, suffix) =>
 			suffix ? prefix : "",
