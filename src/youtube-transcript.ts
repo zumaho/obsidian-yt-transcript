@@ -244,15 +244,20 @@ export class YoutubeTranscript {
 
 		const apiUrl =
 			"https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false";
-		const headers = {
+		const clientVersion = "2.20250701.01.00";
+		const headers: Record<string, string> = {
 			"Content-Type": "application/json",
 			"User-Agent":
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 			Accept: "*/*",
 			"Accept-Language": "en-US,en;q=0.9",
 			"X-Youtube-Client-Name": "1",
-			"X-Youtube-Client-Version": "2.20250313.00.00",
+			"X-Youtube-Client-Version": clientVersion,
 			"X-Goog-EOM-Visitor-Id": visitorData,
+			"X-Youtube-Bootstrap-Logged-In": "false",
+			"X-Origin": "https://www.youtube.com",
+			Origin: "https://www.youtube.com",
+			Referer: `https://www.youtube.com/watch?v=${videoId}`,
 			Cookie: "CONSENT=YES+cb.20210328-17-p0.en+FX+{};",
 		};
 
@@ -269,11 +274,12 @@ export class YoutubeTranscript {
 					context: {
 						client: {
 							clientName: "WEB",
-							clientVersion: "2.20250313.00.00",
+							clientVersion: clientVersion,
 							hl: langCode,
 							gl: config?.country || "US",
 						},
 					},
+					externalVideoId: videoId,
 					params: params,
 				};
 
